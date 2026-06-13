@@ -127,7 +127,14 @@ class StockLedgerEntry(Document):
 			.where(
 				(sle.item_code == self.item_code)
 				& (sle.warehouse == self.warehouse)
-				& (sle.posting_datetime < self.posting_datetime)
+				# Use <= (not <) and exclude the current entry by name so that other
+				# rows of the same voucher are accounted for. All Stock Ledger Entries
+				# of a single voucher share an identical posting_datetime, and siblings
+				# are inserted sequentially, so a strict < would let multiple rows
+				# against the same item/warehouse/dimension each pass individually while
+				# collectively driving the dimension balance negative.
+				& (sle.posting_datetime <= self.posting_datetime)
+				& (sle.name != self.name)
 				& (sle.company == self.company)
 				& (sle.is_cancelled == 0)
 			)

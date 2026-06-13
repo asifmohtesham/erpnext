@@ -4,7 +4,7 @@
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_field
 from frappe.tests.utils import FrappeTestCase
-from frappe.utils import nowdate, nowtime
+from frappe.utils import add_days, nowdate, nowtime
 
 from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
 from erpnext.stock.doctype.inventory_dimension.inventory_dimension import (
@@ -503,6 +503,53 @@ class TestInventoryDimension(FrappeTestCase):
 		)[0].inv_site
 
 		self.assertEqual(site_name, "Site 1")
+
+	def test_negative_stock_for_multiple_rows_in_single_voucher(self):
+		# Regression: a single voucher with multiple rows against the same
+		# item + warehouse + inventory dimension, where each row is within the
+		# available balance but the rows collectively exceed it, must not be
+		# allowed to drive the dimension balance negative. All SLEs of one
+		# voucher share an identical posting_datetime, so the per-row check must
+		# account for already-posted sibling rows of the same voucher.
+		frappe.local.inventory_dimensions = {}
+		item_code = "Test Negative Inv Dimension Multi Row Item"
+		# Allow negative stock at warehouse level to isolate the dimension guard
+		frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 1)
+		create_item(item_code)
+
+		create_inventory_dimension(
+			apply_to_all_doctypes=1,
+			dimension_name="Inv Site",
+			reference_document="Inv Site",
+			document_type="Inv Site",
+			validate_negative_stock=1,
+		)
+
+		warehouse = create_warehouse("Negative Stock Multi Row Warehouse")
+
+		# Receive 100 qty against the inventory dimension (dated earlier)
+		receipt = make_stock_entry(
+			item_code=item_code,
+			target=warehouse,
+			qty=100,
+			posting_date=add_days(nowdate(), -1),
+			do_not_submit=True,
+		)
+		receipt.items[0].to_inv_site = "Site 1"
+		receipt.submit()
+
+		# Issue 60 + 60 = 120 in a single voucher; each row (60) is below the
+		# available 100, but together they exceed it.
+		issue = make_stock_entry(
+			item_code=item_code, source=warehouse, qty=60, do_not_submit=True
+		)
+		issue.items[0].inv_site = "Site 1"
+		second_row = issue.items[0].as_dict()
+		for field in ("name", "idx", "creation", "modified", "owner", "modified_by"):
+			second_row.pop(field, None)
+		issue.append("items", second_row)
+
+		self.assertRaises(InventoryDimensionNegativeStockError, issue.submit)
 
 	def test_validate_negative_stock_with_multiple_dimension(self):
 		frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 0)
